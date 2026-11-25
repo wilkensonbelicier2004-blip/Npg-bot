@@ -27,17 +27,24 @@ h2{font-size:16px;margin:14px 0 6px}
 <div id="st">Ap kòmanse...</div>
 <button onclick="nt()">Aktive notifikasyon</button>
 <button onclick="rezet()">Efase istwa</button>
-<h2>Mache a</h2><div id="mc"></div>
 <h2>Siyal yo</h2><div id="ev"></div>
+<h2>Mache a</h2><div id="mc"></div>
 <script>
 const PEZ = {
-  BTCUSDT: {k: 'XBTUSDT', c: 'BTC-USD'},
-  ETHUSDT: {k: 'ETHUSDT', c: 'ETH-USD'},
-  BNBUSDT: {},
-  SOLUSDT: {k: 'SOLUSDT', c: 'SOL-USD'},
-  XRPUSDT: {k: 'XRPUSDT', c: 'XRP-USD'}
+  BTCUSDT: {n: 'BTC/USDT', b: 'BTCUSDT', k: 'XBTUSDT', c: 'BTC-USD'},
+  ETHUSDT: {n: 'ETH/USDT', b: 'ETHUSDT', k: 'ETHUSDT', c: 'ETH-USD'},
+  BNBUSDT: {n: 'BNB/USDT', b: 'BNBUSDT'},
+  SOLUSDT: {n: 'SOL/USDT', b: 'SOLUSDT', k: 'SOLUSDT', c: 'SOL-USD'},
+  XRPUSDT: {n: 'XRP/USDT', b: 'XRPUSDT', k: 'XRPUSDT', c: 'XRP-USD'},
+  EURUSD: {n: 'EUR/USD', f: true, b: 'EURUSDT', k: 'EURUSD'},
+  GBPUSD: {n: 'GBP/USD', f: true, b: 'GBPUSDT', k: 'GBPUSD'},
+  AUDUSD: {n: 'AUD/USD', f: true, b: 'AUDUSDT', k: 'AUDUSD'},
+  USDJPY: {n: 'USD/JPY', f: true, k: 'USDJPY'},
+  USDCAD: {n: 'USD/CAD', f: true, k: 'USDCAD'},
+  USDCHF: {n: 'USD/CHF', f: true, k: 'USDCHF'}
 };
-const SL = 0.005, TP = 0.01, PAUS = 20000, MAX_AJE = 120000;
+const SL_C = 0.005, TP_C = 0.01, SL_F = 0.001, TP_F = 0.002;
+const PAUS = 20000, MAX_AJE = 120000;
 let eta = {pozisyon: {}, istwa: [], stat: {gen: 0, pet: 0}, dernye: {}, kont: 0};
 try {
   const s = localStorage.getItem('npg_eta');
@@ -52,6 +59,7 @@ const mache = {};
 const premye = {};
 let tou = 0, etap = 'ap kòmanse', update = '';
 
+const nom = s => (PEZ[s] && PEZ[s].n) || s;
 const esc = s => String(s).replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
 function nt() { if ('Notification' in window) Notification.requestPermission(); }
 
@@ -67,7 +75,9 @@ async function lis(url) {
 
 function binance(host) {
   return async s => {
-    const d = await lis(host + '/api/v3/klines?symbol=' + s + '&interval=1m&limit=100');
+    const m = PEZ[s].b;
+    if (!m) throw new Error('pa disponib');
+    const d = await lis(host + '/api/v3/klines?symbol=' + m + '&interval=1m&limit=100');
     return [d.map(k => k[0]), d.map(k => parseFloat(k[4]))];
   };
 }
@@ -143,6 +153,11 @@ function kalkile(prix) {
   return [siyal, e9[L - 1], e21[L - 1], r];
 }
 
+function fmt(pri) {
+  if (pri < 10) return pri.toFixed(5);
+  if (pri < 1000) return pri.toFixed(3);
+  return pri.toFixed(2);
+}
 function pl(p, pri) {
   if (p.sans === 'ACHTE') return (pri - p.antre) / p.antre * 100;
   return (p.antre - pri) / p.antre * 100;
@@ -160,7 +175,7 @@ function notifye(x) {
 }
 function evenman(tip, sym, sans, liy, le) {
   eta.kont++;
-  const x = {id: eta.kont, tip: tip, sym: sym, sans: sans, le: le, liy: liy};
+  const x = {id: eta.kont, tip: tip, sym: nom(sym), sans: sans, le: le, liy: liy};
   eta.istwa.unshift(x);
   eta.istwa.length = Math.min(eta.istwa.length, 50);
   notifye(x);
@@ -173,18 +188,20 @@ function femen(sym, pri, rezon, le) {
   if (v > 0) { eta.stat.gen++; rez = 'GEN'; } else { eta.stat.pet++; rez = 'PET'; }
   evenman('SOTI', sym, p.sans, [
     'Rezon: ' + rezon,
-    'Antre: ' + p.antre.toFixed(4) + ' | Soti: ' + pri.toFixed(4),
+    'Antre: ' + fmt(p.antre) + ' | Soti: ' + fmt(pri),
     'Rezilta: ' + rez + ' ' + v.toFixed(2) + '%',
-    'MT5: fèmen trade a kounye a'], le);
+    'MT5 / Pocket Option: fèmen trade a kounye a'], le);
 }
 function louvri(sym, siyal, pri, r, le) {
+  const fx = PEZ[sym].f;
+  const SL = fx ? SL_F : SL_C, TP = fx ? TP_F : TP_C;
   let sl, tp;
   if (siyal === 'ACHTE') { sl = pri * (1 - SL); tp = pri * (1 + TP); }
   else { sl = pri * (1 + SL); tp = pri * (1 - TP); }
   eta.pozisyon[sym] = {sans: siyal, antre: pri, sl: sl, tp: tp};
   evenman('ANTRE', sym, siyal, [
-    siyal + ' @ ' + pri.toFixed(4) + ' | RSI ' + Math.round(r),
-    'MT5 -> SL: ' + sl.toFixed(4) + ' | TP: ' + tp.toFixed(4),
+    siyal + ' @ ' + fmt(pri) + ' | RSI ' + Math.round(r),
+    'MT5 -> SL: ' + fmt(sl) + ' | TP: ' + fmt(tp),
     'Pocket Option -> ekspirasyon: 1 a 3 min'], le);
 }
 function trete(sym, sous, res, pri, tan, le) {
@@ -222,17 +239,18 @@ function rann() {
   document.getElementById('st').textContent =
     'Mizajou: ' + update + ' | Tou #' + tou + ' | ' + etap + ' | GEN ' + eta.stat.gen + ' / PET ' + eta.stat.pet;
   let h = '';
-  for (const sym of Object.keys(mache)) {
+  for (const sym of Object.keys(PEZ)) {
     const m = mache[sym];
+    if (!m) continue;
     if (m.err) {
-      h += '<div class="kat"><b>' + esc(sym) + '</b><br><span class="er">' + esc(m.err) + '</span></div>';
+      h += '<div class="kat"><b>' + esc(nom(sym)) + '</b><br><span class="er">' + esc(m.err) + '</span></div>';
       continue;
     }
     let b = '<span class="atann">ATANN</span>';
     if (m.trade) {
       b = '<span class="' + (m.trade.sans === 'ACHTE' ? 'achte' : 'vann') + '">TRADE ' + m.trade.sans + ' | P/L ' + m.trade.pl + '%</span>';
     }
-    h += '<div class="kat"><b>' + esc(sym) + '</b> ' + m.pri.toFixed(m.pri < 10 ? 4 : 2) +
+    h += '<div class="kat"><b>' + esc(nom(sym)) + '</b> ' + fmt(m.pri) +
       '<br>Mache a ap ' + m.tandans + ' | RSI ' + m.rsi + '<br>' + b +
       '<br><span class="pti">Sous: ' + esc(m.sous) + '</span></div>';
   }
@@ -248,7 +266,7 @@ function rann() {
 async function tour() {
   const le = new Date().toLocaleTimeString('fr-FR');
   for (const sym of Object.keys(PEZ)) {
-    etap = 'ap li ' + sym; rann();
+    etap = 'ap li ' + nom(sym); rann();
     try {
       const d = await jwennDone(sym);
       trete(sym, d.non, kalkile(d.prix), d.prix[d.prix.length - 1], d.tan, le);
