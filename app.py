@@ -2,7 +2,7 @@ import json
 import os
 import time
 import threading
-from urllib.request import urlopen
+from urllib.request import urlopen, Request
 from datetime import datetime
 from flask import Flask, jsonify, Response
 
@@ -11,8 +11,15 @@ PAUS = 20
 SL_PCT = 0.005
 TP_PCT = 0.01
 MAX_AJE = 120
-HOSTS = ["https://data-api.binance.vision", "https://api.binance.com"]
 FICHYE = "state.json"
+
+MAP = {
+    "BTCUSDT": {"kraken": "XBTUSDT", "coinbase": "BTC-USD"},
+    "ETHUSDT": {"kraken": "ETHUSDT", "coinbase": "ETH-USD"},
+    "BNBUSDT": {},
+    "SOLUSDT": {"kraken": "SOLUSDT", "coinbase": "SOL-USD"},
+    "XRPUSDT": {"kraken": "XRPUSDT", "coinbase": "XRP-USD"},
+}
 
 app = Flask(__name__)
 lock = threading.Lock()
@@ -34,16 +41,56 @@ def sove():
     except Exception:
         pass
 
+def lis(url):
+    req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    return json.loads(urlopen(req, timeout=10).read())
+
+def fetch_binance(host):
+    def f(sym):
+        url = host + "/api/v3/klines?symbol=" + sym + "&interval=1m&limit=100"
+        d = lis(url)
+        return [k[0] for k in d], [float(k[4]) for k in d]
+    return f
+
+def fetch_kraken(sym):
+    m = MAP.get(sym, {}).get("kraken")
+    if not m:
+        raise Exception("pa disponib")
+    d = lis("https://api.kraken.com/0/public/OHLC?pair=" + m + "&interval=1")
+    if d.get("error"):
+        raise Exception(str(d["error"])[:60])
+    rez = d["result"]
+    kle = [k for k in rez if k != "last"][0]
+    rows = rez[kle][-100:]
+    return [int(r[0]) * 1000 for r in rows], [float(r[4]) for r in rows]
+
+def fetch_coinbase(sym):
+    m = MAP.get(sym, {}).get("coinbase")
+    if not m:
+        raise Exception("pa disponib")
+    d = lis("https://api.exchange.coinbase.com/products/" + m + "/candles?granularity=60")
+    rows = d[:100][::-1]
+    return [int(r[0]) * 1000 for r in rows], [float(r[4]) for r in rows]
+
+SOUS = [
+    ("Binance.US", fetch_binance("https://api.binance.us")),
+    ("Binance Vision", fetch_binance("https://data-api.binance.vision")),
+    ("Binance", fetch_binance("https://api.binance.com")),
+    ("Kraken", fetch_kraken),
+    ("Coinbase", fetch_coinbase),
+]
+
 def jwenn_done(sym):
-    dènye_erè = None
-    for h in HOSTS:
+    erè = []
+    for non, fn in SOUS:
         try:
-            url = h + "/api/v3/klines?symbol=" + sym + "&interval=1m&limit=100"
-            done = json.loads(urlopen(url, timeout=10).read())
-            return [k[0] for k in done], [float(k[4]) for k in done]
+            tan, prix = fn(sym)
+            if len(prix) < 30:
+                raise Exception("pa ase done")
+            return non, tan, prix
         except Exception as e:
-            dènye_erè = e
-    raise dènye_erè
+            erè.append(non + ": " + str(e)[:40])
+    raise Exception(" | ".join(erè))
 
 def ema(prix, n):
     k = 2 / (n + 1)
@@ -117,7 +164,7 @@ def louvri(sym, siyal, pri, r, le):
         "MT5 -> SL: " + str(round(sl, 4)) + " | TP: " + str(round(tp, 4)),
         "Pocket Option -> ekspirasyon: 1 a 3 min"], le)
 
-def trete(sym, siyal, a, b, r, pri, tan, le):
+def trete(sym, sous, siyal, a, b, r, pri, tan, le):
     if sym in eta["pozisyon"]:
         p = eta["pozisyon"][sym]
         if p["sans"] == "ACHTE":
@@ -148,20 +195,20 @@ def trete(sym, siyal, a, b, r, pri, tan, le):
         trade = {"sans": p["sans"], "antre": p["antre"], "sl": p["sl"],
                  "tp": p["tp"], "pl": round(pl_pct(p, pri), 2)}
     eta["mache"][sym] = {"pri": pri, "tandans": "monte" if a > b else "desann",
-                         "rsi": round(r), "trade": trade}
+                         "rsi": round(r), "trade": trade, "sous": sous}
 
 def boukle():
     while True:
         le = datetime.now().strftime("%H:%M:%S")
         for sym in PEZ:
             try:
-                tan, prix = jwenn_done(sym)
+                sous, tan, prix = jwenn_done(sym)
                 siyal, a, b, r = kalkile(prix)
                 with lock:
-                    trete(sym, siyal, a, b, r, prix[-1], tan, le)
+                    trete(sym, sous, siyal, a, b, r, prix[-1], tan, le)
             except Exception as e:
                 with lock:
-                    eta["mache"][sym] = {"err": str(e)[:80]}
+                    eta["mache"][sym] = {"err": str(e)[:300]}
         with lock:
             eta["update"] = le
             sove()
@@ -172,6 +219,7 @@ threading.Thread(target=boukle, daemon=True).start()
 PAJ = r"""<!doctype html><html lang="ht"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#0b0f14">
+<meta name="google" content="notranslate">
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" href="/icon.svg"><link rel="apple-touch-icon" href="/icon.svg">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -185,6 +233,7 @@ button{background:#1f2937;color:#fff;border:0;border-radius:8px;padding:8px 12px
 .ev{background:#111827;border-radius:10px;padding:10px;margin-bottom:8px;font-size:14px;border-left:5px solid #6b7280}
 .ev.achte{border-color:#22c55e}.ev.vann{border-color:#ef4444}.ev.soti{border-color:#f59e0b}
 .achte{color:#22c55e;font-weight:bold}.vann{color:#ef4444;font-weight:bold}.atann{color:#9ca3af}
+.pti{font-size:11px;color:#6b7280}.er{font-size:12px;color:#f87171}
 h2{font-size:16px;margin:14px 0 6px}
 </style></head><body>
 <h1>NPG POCKET BOT</h1><div id="st">Ap chaje...</div>
@@ -202,14 +251,14 @@ async function chaje(){
     st.textContent = 'Mizajou: ' + d.update + ' | GEN ' + d.stat.gen + ' / PET ' + d.stat.pet;
     let h = '';
     for (const [sym, m] of Object.entries(d.mache)){
-      if (m.err){ h += `<div class="kat"><b>${esc(sym)}</b> erè rezo</div>`; continue; }
+      if (m.err){ h += `<div class="kat"><b>${esc(sym)}</b><br><span class="er">${esc(m.err)}</span></div>`; continue; }
       let b = '<span class="atann">ATANN</span>';
       if (m.trade){
         b = `<span class="${m.trade.sans=='ACHTE'?'achte':'vann'}">TRADE ${m.trade.sans} | P/L ${m.trade.pl}%</span>`;
       }
-      h += `<div class="kat"><b>${esc(sym)}</b> ${m.pri}<br>Mache a ap ${m.tandans} | RSI ${m.rsi}<br>${b}</div>`;
+      h += `<div class="kat"><b>${esc(sym)}</b> ${m.pri}<br>Mache a ap ${m.tandans} | RSI ${m.rsi}<br>${b}<br><span class="pti">Sous: ${esc(m.sous)}</span></div>`;
     }
-    document.getElementById('mc').innerHTML = h;
+    document.getElementById('mc').innerHTML = h || '<p class="atann">Ap tann premye done yo...</p>';
     let e = '';
     for (const x of d.istwa){
       const k = x.tip=='ANTRE' ? (x.sans=='ACHTE'?'achte':'vann') : 'soti';
@@ -246,6 +295,21 @@ def lakay():
 def api():
     with lock:
         return jsonify(eta)
+
+@app.route("/sante")
+def sante():
+    return "ok"
+
+@app.route("/diag")
+def diag():
+    rez = {}
+    for non, fn in SOUS:
+        try:
+            tan, prix = fn("BTCUSDT")
+            rez[non] = "OK " + str(len(prix)) + " bougi, dènye pri " + str(prix[-1])
+        except Exception as e:
+            rez[non] = "ERÈ: " + str(e)[:100]
+    return jsonify(rez)
 
 @app.route("/manifest.json")
 def manifest():
