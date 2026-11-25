@@ -1,237 +1,7 @@
-import json
 import os
-import socket
-import time
-import threading
-from urllib.request import urlopen, Request
-from datetime import datetime
 from flask import Flask, jsonify, Response
 
-socket.setdefaulttimeout(5)
-
-PEZ = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
-PAUS = 20
-SL_PCT = 0.005
-TP_PCT = 0.01
-MAX_AJE = 120
-FICHYE = "state.json"
-
-MAP = {
-    "BTCUSDT": {"kraken": "XBTUSDT", "coinbase": "BTC-USD"},
-    "ETHUSDT": {"kraken": "ETHUSDT", "coinbase": "ETH-USD"},
-    "BNBUSDT": {},
-    "SOLUSDT": {"kraken": "SOLUSDT", "coinbase": "SOL-USD"},
-    "XRPUSDT": {"kraken": "XRPUSDT", "coinbase": "XRP-USD"},
-}
-
 app = Flask(__name__)
-lock = threading.Lock()
-premye = set()
-fil = {"mache": False}
-eta = {"mache": {}, "pozisyon": {}, "istwa": [], "stat": {"gen": 0, "pet": 0},
-       "dernye": {}, "update": "", "kont": 0, "etap": "ap kòmanse", "tou": 0}
-
-if os.path.exists(FICHYE):
-    try:
-        with open(FICHYE, encoding="utf-8") as f:
-            eta.update(json.load(f))
-    except Exception:
-        pass
-
-def sove():
-    try:
-        with open(FICHYE, "w", encoding="utf-8") as f:
-            json.dump(eta, f)
-    except Exception:
-        pass
-
-def lis(url):
-    req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    return json.loads(urlopen(req, timeout=5).read())
-
-def fetch_binance(host):
-    def f(sym):
-        url = host + "/api/v3/klines?symbol=" + sym + "&interval=1m&limit=100"
-        d = lis(url)
-        return [k[0] for k in d], [float(k[4]) for k in d]
-    return f
-
-def fetch_kraken(sym):
-    m = MAP.get(sym, {}).get("kraken")
-    if not m:
-        raise Exception("pa disponib")
-    d = lis("https://api.kraken.com/0/public/OHLC?pair=" + m + "&interval=1")
-    if d.get("error"):
-        raise Exception(str(d["error"])[:60])
-    rez = d["result"]
-    kle = [k for k in rez if k != "last"][0]
-    rows = rez[kle][-100:]
-    return [int(r[0]) * 1000 for r in rows], [float(r[4]) for r in rows]
-
-def fetch_coinbase(sym):
-    m = MAP.get(sym, {}).get("coinbase")
-    if not m:
-        raise Exception("pa disponib")
-    d = lis("https://api.exchange.coinbase.com/products/" + m + "/candles?granularity=60")
-    rows = d[:100][::-1]
-    return [int(r[0]) * 1000 for r in rows], [float(r[4]) for r in rows]
-
-SOUS = [
-    ("Kraken", fetch_kraken),
-    ("Coinbase", fetch_coinbase),
-    ("Binance.US", fetch_binance("https://api.binance.us")),
-    ("Binance Vision", fetch_binance("https://data-api.binance.vision")),
-    ("Binance", fetch_binance("https://api.binance.com")),
-]
-
-def jwenn_done(sym):
-    erè = []
-    for non, fn in SOUS:
-        try:
-            tan, prix = fn(sym)
-            if len(prix) < 30:
-                raise Exception("pa ase done")
-            return non, tan, prix
-        except Exception as e:
-            erè.append(non + ": " + str(e)[:40])
-    raise Exception(" | ".join(erè))
-
-def ema(prix, n):
-    k = 2 / (n + 1)
-    e = prix[0]
-    rez = [e]
-    for p in prix[1:]:
-        e = p * k + e * (1 - k)
-        rez.append(e)
-    return rez
-
-def rsi(prix, n=14):
-    gain, pert = [], []
-    for i in range(1, len(prix)):
-        d = prix[i] - prix[i - 1]
-        gain.append(max(d, 0))
-        pert.append(max(-d, 0))
-    g = sum(gain[:n]) / n
-    p = sum(pert[:n]) / n
-    for i in range(n, len(gain)):
-        g = (g * (n - 1) + gain[i]) / n
-        p = (p * (n - 1) + pert[i]) / n
-    if p == 0:
-        return 100
-    return 100 - 100 / (1 + g / p)
-
-def kalkile(prix):
-    e9 = ema(prix, 9)
-    e21 = ema(prix, 21)
-    r = rsi(prix[:-1])
-    siyal = "ATANN"
-    if e9[-3] < e21[-3] and e9[-2] > e21[-2] and r < 70:
-        siyal = "ACHTE"
-    elif e9[-3] > e21[-3] and e9[-2] < e21[-2] and r > 30:
-        siyal = "VANN"
-    return siyal, e9[-1], e21[-1], r
-
-def pl_pct(p, pri):
-    if p["sans"] == "ACHTE":
-        return (pri - p["antre"]) / p["antre"] * 100
-    return (p["antre"] - pri) / p["antre"] * 100
-
-def evenman(tip, sym, sans, liy, le):
-    eta["kont"] += 1
-    eta["istwa"].insert(0, {"id": eta["kont"], "tip": tip, "sym": sym,
-                            "sans": sans, "le": le, "liy": liy})
-    del eta["istwa"][50:]
-
-def femen(sym, pri, rezon, le):
-    p = eta["pozisyon"].pop(sym)
-    pl = pl_pct(p, pri)
-    if pl > 0:
-        eta["stat"]["gen"] += 1
-        rez = "GEN"
-    else:
-        eta["stat"]["pet"] += 1
-        rez = "PET"
-    evenman("SOTI", sym, p["sans"], [
-        "Rezon: " + rezon,
-        "Antre: " + str(round(p["antre"], 4)) + " | Soti: " + str(round(pri, 4)),
-        "Rezilta: " + rez + " " + str(round(pl, 2)) + "%",
-        "MT5: fèmen trade a kounye a"], le)
-
-def louvri(sym, siyal, pri, r, le):
-    if siyal == "ACHTE":
-        sl, tp = pri * (1 - SL_PCT), pri * (1 + TP_PCT)
-    else:
-        sl, tp = pri * (1 + SL_PCT), pri * (1 - TP_PCT)
-    eta["pozisyon"][sym] = {"sans": siyal, "antre": pri, "sl": sl, "tp": tp}
-    evenman("ANTRE", sym, siyal, [
-        siyal + " @ " + str(round(pri, 4)) + " | RSI " + str(round(r)),
-        "MT5 -> SL: " + str(round(sl, 4)) + " | TP: " + str(round(tp, 4)),
-        "Pocket Option -> ekspirasyon: 1 a 3 min"], le)
-
-def trete(sym, sous, siyal, a, b, r, pri, tan, le):
-    if sym in eta["pozisyon"]:
-        p = eta["pozisyon"][sym]
-        if p["sans"] == "ACHTE":
-            if pri <= p["sl"]:
-                femen(sym, pri, "SL touche", le)
-            elif pri >= p["tp"]:
-                femen(sym, pri, "TP touche", le)
-        else:
-            if pri >= p["sl"]:
-                femen(sym, pri, "SL touche", le)
-            elif pri <= p["tp"]:
-                femen(sym, pri, "TP touche", le)
-    if sym not in premye:
-        premye.add(sym)
-        if siyal != "ATANN":
-            eta["dernye"][sym] = tan[-2]
-    elif siyal != "ATANN" and eta["dernye"].get(sym) != tan[-2]:
-        eta["dernye"][sym] = tan[-2]
-        fre = (time.time() * 1000 - (tan[-2] + 60000)) <= MAX_AJE * 1000
-        if fre:
-            if sym in eta["pozisyon"] and eta["pozisyon"][sym]["sans"] != siyal:
-                femen(sym, pri, "Kwazman kontrè", le)
-            if sym not in eta["pozisyon"]:
-                louvri(sym, siyal, pri, r, le)
-    p = eta["pozisyon"].get(sym)
-    trade = None
-    if p:
-        trade = {"sans": p["sans"], "antre": p["antre"], "sl": p["sl"],
-                 "tp": p["tp"], "pl": round(pl_pct(p, pri), 2)}
-    eta["mache"][sym] = {"pri": pri, "tandans": "monte" if a > b else "desann",
-                         "rsi": round(r), "trade": trade, "sous": sous}
-
-def boukle():
-    while True:
-        try:
-            le = datetime.now().strftime("%H:%M:%S")
-            for sym in PEZ:
-                eta["etap"] = "ap li " + sym
-                try:
-                    sous, tan, prix = jwenn_done(sym)
-                    siyal, a, b, r = kalkile(prix)
-                    with lock:
-                        trete(sym, sous, siyal, a, b, r, prix[-1], tan, le)
-                except Exception as e:
-                    with lock:
-                        eta["mache"][sym] = {"err": str(e)[:300]}
-            with lock:
-                eta["tou"] += 1
-                eta["update"] = le
-                eta["etap"] = "ap tann pwochen tou"
-                sove()
-        except Exception as e:
-            eta["etap"] = "erè bòkl: " + str(e)[:100]
-        time.sleep(PAUS)
-
-def demare():
-    if not fil["mache"]:
-        fil["mache"] = True
-        threading.Thread(target=boukle, daemon=True).start()
-
-@app.before_request
-def avan():
-    demare()
 
 PAJ = r"""<!doctype html><html lang="ht"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -245,7 +15,7 @@ PAJ = r"""<!doctype html><html lang="ht"><head><meta charset="utf-8">
 body{margin:0;padding:12px;background:#0b0f14;color:#e5e7eb;font-family:sans-serif}
 h1{font-size:20px;margin:4px 0}
 #st{font-size:12px;color:#9ca3af;margin-bottom:8px}
-button{background:#1f2937;color:#fff;border:0;border-radius:8px;padding:8px 12px;margin-bottom:10px}
+button{background:#1f2937;color:#fff;border:0;border-radius:8px;padding:8px 12px;margin:0 6px 10px 0}
 .kat{background:#111827;border-radius:10px;padding:10px;margin-bottom:8px}
 .ev{background:#111827;border-radius:10px;padding:10px;margin-bottom:8px;font-size:14px;border-left:5px solid #6b7280}
 .ev.achte{border-color:#22c55e}.ev.vann{border-color:#ef4444}.ev.soti{border-color:#f59e0b}
@@ -253,49 +23,259 @@ button{background:#1f2937;color:#fff;border:0;border-radius:8px;padding:8px 12px
 .pti{font-size:11px;color:#6b7280}.er{font-size:12px;color:#f87171}
 h2{font-size:16px;margin:14px 0 6px}
 </style></head><body>
-<h1>NPG POCKET BOT</h1><div id="st">Ap chaje...</div>
+<h1>NPG POCKET BOT</h1>
+<div id="st">Ap kòmanse...</div>
 <button onclick="nt()">Aktive notifikasyon</button>
+<button onclick="rezet()">Efase istwa</button>
 <h2>Mache a</h2><div id="mc"></div>
 <h2>Siyal yo</h2><div id="ev"></div>
 <script>
-let dernyeId = null;
-const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-function nt(){ if ('Notification' in window) Notification.requestPermission(); }
-async function chaje(){
-  const st = document.getElementById('st');
-  try{
-    const d = await (await fetch('/api/state')).json();
-    st.textContent = 'Mizajou: ' + d.update + ' | Tou #' + d.tou + ' | ' + d.etap + ' | GEN ' + d.stat.gen + ' / PET ' + d.stat.pet;
-    let h = '';
-    for (const [sym, m] of Object.entries(d.mache)){
-      if (m.err){ h += `<div class="kat"><b>${esc(sym)}</b><br><span class="er">${esc(m.err)}</span></div>`; continue; }
-      let b = '<span class="atann">ATANN</span>';
-      if (m.trade){
-        b = `<span class="${m.trade.sans=='ACHTE'?'achte':'vann'}">TRADE ${m.trade.sans} | P/L ${m.trade.pl}%</span>`;
-      }
-      h += `<div class="kat"><b>${esc(sym)}</b> ${m.pri}<br>Mache a ap ${m.tandans} | RSI ${m.rsi}<br>${b}<br><span class="pti">Sous: ${esc(m.sous)}</span></div>`;
-    }
-    document.getElementById('mc').innerHTML = h || '<p class="atann">Ap tann premye done yo...</p>';
-    let e = '';
-    for (const x of d.istwa){
-      const k = x.tip=='ANTRE' ? (x.sans=='ACHTE'?'achte':'vann') : 'soti';
-      e += `<div class="ev ${k}"><b>${x.le} ${esc(x.sym)} - ${x.tip}</b><br>${x.liy.map(esc).join('<br>')}</div>`;
-    }
-    document.getElementById('ev').innerHTML = e || '<p class="atann">Pa gen siyal ankò.</p>';
-    if (d.istwa.length){
-      const id = d.istwa[0].id;
-      if (dernyeId !== null && id > dernyeId){
-        if (navigator.vibrate) navigator.vibrate(300);
-        if ('Notification' in window && Notification.permission == 'granted'){
-          const x = d.istwa[0];
-          new Notification(x.sym + ' ' + x.tip, {body: x.liy[0]});
-        }
-      }
-      dernyeId = id;
-    } else if (dernyeId === null){ dernyeId = 0; }
-  }catch(err){ st.textContent = 'Pa gen koneksyon...'; }
+const PEZ = {
+  BTCUSDT: {k: 'XBTUSDT', c: 'BTC-USD'},
+  ETHUSDT: {k: 'ETHUSDT', c: 'ETH-USD'},
+  BNBUSDT: {},
+  SOLUSDT: {k: 'SOLUSDT', c: 'SOL-USD'},
+  XRPUSDT: {k: 'XRPUSDT', c: 'XRP-USD'}
+};
+const SL = 0.005, TP = 0.01, PAUS = 20000, MAX_AJE = 120000;
+let eta = {pozisyon: {}, istwa: [], stat: {gen: 0, pet: 0}, dernye: {}, kont: 0};
+try {
+  const s = localStorage.getItem('npg_eta');
+  if (s) eta = Object.assign(eta, JSON.parse(s));
+} catch (e) {}
+function sove() { try { localStorage.setItem('npg_eta', JSON.stringify(eta)); } catch (e) {} }
+function rezet() {
+  eta = {pozisyon: {}, istwa: [], stat: {gen: 0, pet: 0}, dernye: {}, kont: 0};
+  sove(); rann();
 }
-chaje(); setInterval(chaje, 10000);
+const mache = {};
+const premye = {};
+let tou = 0, etap = 'ap kòmanse', update = '';
+
+const esc = s => String(s).replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
+function nt() { if ('Notification' in window) Notification.requestPermission(); }
+
+async function lis(url) {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), 6000);
+  try {
+    const r = await fetch(url, {signal: c.signal});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return await r.json();
+  } finally { clearTimeout(t); }
+}
+
+function binance(host) {
+  return async s => {
+    const d = await lis(host + '/api/v3/klines?symbol=' + s + '&interval=1m&limit=100');
+    return [d.map(k => k[0]), d.map(k => parseFloat(k[4]))];
+  };
+}
+const SOUS = [
+  ['Binance', binance('https://api.binance.com')],
+  ['Binance Vision', binance('https://data-api.binance.vision')],
+  ['Kraken', async s => {
+    const m = PEZ[s].k;
+    if (!m) throw new Error('pa disponib');
+    const d = await lis('https://api.kraken.com/0/public/OHLC?pair=' + m + '&interval=1');
+    if (d.error && d.error.length) throw new Error(d.error[0]);
+    const key = Object.keys(d.result).filter(x => x !== 'last')[0];
+    const rows = d.result[key].slice(-100);
+    return [rows.map(r => r[0] * 1000), rows.map(r => parseFloat(r[4]))];
+  }],
+  ['Coinbase', async s => {
+    const m = PEZ[s].c;
+    if (!m) throw new Error('pa disponib');
+    const d = await lis('https://api.exchange.coinbase.com/products/' + m + '/candles?granularity=60');
+    const rows = d.slice(0, 100).reverse();
+    return [rows.map(r => r[0] * 1000), rows.map(r => parseFloat(r[4]))];
+  }]
+];
+
+async function jwennDone(s) {
+  const er = [];
+  for (const [non, fn] of SOUS) {
+    try {
+      const [tan, prix] = await fn(s);
+      if (prix.length < 30) throw new Error('pa ase done');
+      return {non, tan, prix};
+    } catch (e) {
+      er.push(non + ': ' + String(e.message || e).slice(0, 40));
+    }
+  }
+  throw new Error(er.join(' | '));
+}
+
+function ema(prix, n) {
+  const k = 2 / (n + 1);
+  let e = prix[0];
+  const rez = [e];
+  for (let i = 1; i < prix.length; i++) {
+    e = prix[i] * k + e * (1 - k);
+    rez.push(e);
+  }
+  return rez;
+}
+function rsi(prix, n) {
+  n = n || 14;
+  const gain = [], pert = [];
+  for (let i = 1; i < prix.length; i++) {
+    const d = prix[i] - prix[i - 1];
+    gain.push(Math.max(d, 0));
+    pert.push(Math.max(-d, 0));
+  }
+  let g = gain.slice(0, n).reduce((a, b) => a + b, 0) / n;
+  let p = pert.slice(0, n).reduce((a, b) => a + b, 0) / n;
+  for (let i = n; i < gain.length; i++) {
+    g = (g * (n - 1) + gain[i]) / n;
+    p = (p * (n - 1) + pert[i]) / n;
+  }
+  if (p === 0) return 100;
+  return 100 - 100 / (1 + g / p);
+}
+function kalkile(prix) {
+  const e9 = ema(prix, 9), e21 = ema(prix, 21);
+  const r = rsi(prix.slice(0, -1));
+  const L = e9.length;
+  let siyal = 'ATANN';
+  if (e9[L - 3] < e21[L - 3] && e9[L - 2] > e21[L - 2] && r < 70) siyal = 'ACHTE';
+  else if (e9[L - 3] > e21[L - 3] && e9[L - 2] < e21[L - 2] && r > 30) siyal = 'VANN';
+  return [siyal, e9[L - 1], e21[L - 1], r];
+}
+
+function pl(p, pri) {
+  if (p.sans === 'ACHTE') return (pri - p.antre) / p.antre * 100;
+  return (p.antre - pri) / p.antre * 100;
+}
+function notifye(x) {
+  try { if (navigator.vibrate) navigator.vibrate(400); } catch (e) {}
+  try {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      const tit = x.sym + ' ' + x.tip + ' ' + x.sans;
+      if (navigator.serviceWorker) {
+        navigator.serviceWorker.ready.then(reg => reg.showNotification(tit, {body: x.liy[0]}));
+      } else { new Notification(tit, {body: x.liy[0]}); }
+    }
+  } catch (e) {}
+}
+function evenman(tip, sym, sans, liy, le) {
+  eta.kont++;
+  const x = {id: eta.kont, tip: tip, sym: sym, sans: sans, le: le, liy: liy};
+  eta.istwa.unshift(x);
+  eta.istwa.length = Math.min(eta.istwa.length, 50);
+  notifye(x);
+}
+function femen(sym, pri, rezon, le) {
+  const p = eta.pozisyon[sym];
+  delete eta.pozisyon[sym];
+  const v = pl(p, pri);
+  let rez;
+  if (v > 0) { eta.stat.gen++; rez = 'GEN'; } else { eta.stat.pet++; rez = 'PET'; }
+  evenman('SOTI', sym, p.sans, [
+    'Rezon: ' + rezon,
+    'Antre: ' + p.antre.toFixed(4) + ' | Soti: ' + pri.toFixed(4),
+    'Rezilta: ' + rez + ' ' + v.toFixed(2) + '%',
+    'MT5: fèmen trade a kounye a'], le);
+}
+function louvri(sym, siyal, pri, r, le) {
+  let sl, tp;
+  if (siyal === 'ACHTE') { sl = pri * (1 - SL); tp = pri * (1 + TP); }
+  else { sl = pri * (1 + SL); tp = pri * (1 - TP); }
+  eta.pozisyon[sym] = {sans: siyal, antre: pri, sl: sl, tp: tp};
+  evenman('ANTRE', sym, siyal, [
+    siyal + ' @ ' + pri.toFixed(4) + ' | RSI ' + Math.round(r),
+    'MT5 -> SL: ' + sl.toFixed(4) + ' | TP: ' + tp.toFixed(4),
+    'Pocket Option -> ekspirasyon: 1 a 3 min'], le);
+}
+function trete(sym, sous, res, pri, tan, le) {
+  const siyal = res[0], a = res[1], b = res[2], r = res[3];
+  const p0 = eta.pozisyon[sym];
+  if (p0) {
+    if (p0.sans === 'ACHTE') {
+      if (pri <= p0.sl) femen(sym, pri, 'SL touche', le);
+      else if (pri >= p0.tp) femen(sym, pri, 'TP touche', le);
+    } else {
+      if (pri >= p0.sl) femen(sym, pri, 'SL touche', le);
+      else if (pri <= p0.tp) femen(sym, pri, 'TP touche', le);
+    }
+  }
+  const dk = tan[tan.length - 2];
+  if (!premye[sym]) {
+    premye[sym] = true;
+    if (siyal !== 'ATANN') eta.dernye[sym] = dk;
+  } else if (siyal !== 'ATANN' && eta.dernye[sym] !== dk) {
+    eta.dernye[sym] = dk;
+    if (Date.now() - (dk + 60000) <= MAX_AJE) {
+      const p = eta.pozisyon[sym];
+      if (p && p.sans !== siyal) femen(sym, pri, 'Kwazman kontrè', le);
+      if (!eta.pozisyon[sym]) louvri(sym, siyal, pri, r, le);
+    }
+  }
+  const p = eta.pozisyon[sym];
+  mache[sym] = {
+    pri: pri, tandans: a > b ? 'monte' : 'desann', rsi: Math.round(r),
+    trade: p ? {sans: p.sans, pl: +pl(p, pri).toFixed(2)} : null, sous: sous
+  };
+}
+
+function rann() {
+  document.getElementById('st').textContent =
+    'Mizajou: ' + update + ' | Tou #' + tou + ' | ' + etap + ' | GEN ' + eta.stat.gen + ' / PET ' + eta.stat.pet;
+  let h = '';
+  for (const sym of Object.keys(mache)) {
+    const m = mache[sym];
+    if (m.err) {
+      h += '<div class="kat"><b>' + esc(sym) + '</b><br><span class="er">' + esc(m.err) + '</span></div>';
+      continue;
+    }
+    let b = '<span class="atann">ATANN</span>';
+    if (m.trade) {
+      b = '<span class="' + (m.trade.sans === 'ACHTE' ? 'achte' : 'vann') + '">TRADE ' + m.trade.sans + ' | P/L ' + m.trade.pl + '%</span>';
+    }
+    h += '<div class="kat"><b>' + esc(sym) + '</b> ' + m.pri.toFixed(m.pri < 10 ? 4 : 2) +
+      '<br>Mache a ap ' + m.tandans + ' | RSI ' + m.rsi + '<br>' + b +
+      '<br><span class="pti">Sous: ' + esc(m.sous) + '</span></div>';
+  }
+  document.getElementById('mc').innerHTML = h || '<p class="atann">Ap tann premye done yo...</p>';
+  let e = '';
+  for (const x of eta.istwa) {
+    const k = x.tip === 'ANTRE' ? (x.sans === 'ACHTE' ? 'achte' : 'vann') : 'soti';
+    e += '<div class="ev ' + k + '"><b>' + x.le + ' ' + esc(x.sym) + ' - ' + x.tip + '</b><br>' + x.liy.map(esc).join('<br>') + '</div>';
+  }
+  document.getElementById('ev').innerHTML = e || '<p class="atann">Pa gen siyal ankò.</p>';
+}
+
+async function tour() {
+  const le = new Date().toLocaleTimeString('fr-FR');
+  for (const sym of Object.keys(PEZ)) {
+    etap = 'ap li ' + sym; rann();
+    try {
+      const d = await jwennDone(sym);
+      trete(sym, d.non, kalkile(d.prix), d.prix[d.prix.length - 1], d.tan, le);
+    } catch (e) {
+      mache[sym] = {err: String(e.message || e).slice(0, 300)};
+    }
+    rann();
+  }
+  tou++; update = le; etap = 'ap tann pwochen tou';
+  sove(); rann();
+}
+async function bouk() {
+  while (true) {
+    try { await tour(); } catch (e) { etap = 'erè: ' + e; rann(); }
+    await new Promise(r => setTimeout(r, PAUS));
+  }
+}
+
+async function kenbe() {
+  try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') kenbe();
+});
+kenbe();
+rann();
+bouk();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
 </script></body></html>"""
 
@@ -308,25 +288,9 @@ ICON = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
 def lakay():
     return Response(PAJ, mimetype="text/html")
 
-@app.route("/api/state")
-def api():
-    with lock:
-        return jsonify(eta)
-
 @app.route("/sante")
 def sante():
     return "ok"
-
-@app.route("/diag")
-def diag():
-    rez = {}
-    for non, fn in SOUS:
-        try:
-            tan, prix = fn("BTCUSDT")
-            rez[non] = "OK " + str(len(prix)) + " bougi, dènye pri " + str(prix[-1])
-        except Exception as e:
-            rez[non] = "ERÈ: " + str(e)[:100]
-    return jsonify(rez)
 
 @app.route("/manifest.json")
 def manifest():
@@ -344,8 +308,6 @@ def icon():
 def sw():
     return Response("self.addEventListener('fetch', function(e){});",
                     mimetype="application/javascript")
-
-demare()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
