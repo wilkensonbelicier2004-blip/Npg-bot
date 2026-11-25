@@ -1,10 +1,13 @@
 import json
 import os
+import socket
 import time
 import threading
 from urllib.request import urlopen, Request
 from datetime import datetime
 from flask import Flask, jsonify, Response
+
+socket.setdefaulttimeout(5)
 
 PEZ = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
 PAUS = 20
@@ -24,8 +27,9 @@ MAP = {
 app = Flask(__name__)
 lock = threading.Lock()
 premye = set()
+fil = {"mache": False}
 eta = {"mache": {}, "pozisyon": {}, "istwa": [], "stat": {"gen": 0, "pet": 0},
-       "dernye": {}, "update": "", "kont": 0}
+       "dernye": {}, "update": "", "kont": 0, "etap": "ap kòmanse", "tou": 0}
 
 if os.path.exists(FICHYE):
     try:
@@ -43,7 +47,7 @@ def sove():
 
 def lis(url):
     req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    return json.loads(urlopen(req, timeout=10).read())
+    return json.loads(urlopen(req, timeout=5).read())
 
 def fetch_binance(host):
     def f(sym):
@@ -73,11 +77,11 @@ def fetch_coinbase(sym):
     return [int(r[0]) * 1000 for r in rows], [float(r[4]) for r in rows]
 
 SOUS = [
+    ("Kraken", fetch_kraken),
+    ("Coinbase", fetch_coinbase),
     ("Binance.US", fetch_binance("https://api.binance.us")),
     ("Binance Vision", fetch_binance("https://data-api.binance.vision")),
     ("Binance", fetch_binance("https://api.binance.com")),
-    ("Kraken", fetch_kraken),
-    ("Coinbase", fetch_coinbase),
 ]
 
 def jwenn_done(sym):
@@ -199,22 +203,35 @@ def trete(sym, sous, siyal, a, b, r, pri, tan, le):
 
 def boukle():
     while True:
-        le = datetime.now().strftime("%H:%M:%S")
-        for sym in PEZ:
-            try:
-                sous, tan, prix = jwenn_done(sym)
-                siyal, a, b, r = kalkile(prix)
-                with lock:
-                    trete(sym, sous, siyal, a, b, r, prix[-1], tan, le)
-            except Exception as e:
-                with lock:
-                    eta["mache"][sym] = {"err": str(e)[:300]}
-        with lock:
-            eta["update"] = le
-            sove()
+        try:
+            le = datetime.now().strftime("%H:%M:%S")
+            for sym in PEZ:
+                eta["etap"] = "ap li " + sym
+                try:
+                    sous, tan, prix = jwenn_done(sym)
+                    siyal, a, b, r = kalkile(prix)
+                    with lock:
+                        trete(sym, sous, siyal, a, b, r, prix[-1], tan, le)
+                except Exception as e:
+                    with lock:
+                        eta["mache"][sym] = {"err": str(e)[:300]}
+            with lock:
+                eta["tou"] += 1
+                eta["update"] = le
+                eta["etap"] = "ap tann pwochen tou"
+                sove()
+        except Exception as e:
+            eta["etap"] = "erè bòkl: " + str(e)[:100]
         time.sleep(PAUS)
 
-threading.Thread(target=boukle, daemon=True).start()
+def demare():
+    if not fil["mache"]:
+        fil["mache"] = True
+        threading.Thread(target=boukle, daemon=True).start()
+
+@app.before_request
+def avan():
+    demare()
 
 PAJ = r"""<!doctype html><html lang="ht"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -248,7 +265,7 @@ async function chaje(){
   const st = document.getElementById('st');
   try{
     const d = await (await fetch('/api/state')).json();
-    st.textContent = 'Mizajou: ' + d.update + ' | GEN ' + d.stat.gen + ' / PET ' + d.stat.pet;
+    st.textContent = 'Mizajou: ' + d.update + ' | Tou #' + d.tou + ' | ' + d.etap + ' | GEN ' + d.stat.gen + ' / PET ' + d.stat.pet;
     let h = '';
     for (const [sym, m] of Object.entries(d.mache)){
       if (m.err){ h += `<div class="kat"><b>${esc(sym)}</b><br><span class="er">${esc(m.err)}</span></div>`; continue; }
@@ -327,6 +344,8 @@ def icon():
 def sw():
     return Response("self.addEventListener('fetch', function(e){});",
                     mimetype="application/javascript")
+
+demare()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
